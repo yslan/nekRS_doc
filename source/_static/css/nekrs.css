@@ -33,3 +33,35 @@ table.tall td .line-block .line {
 .wy-table-responsive table.tall td .line-block .line {
   line-height: 1.4 !important;
 }
+
+/* Split into two colmns*/
+.two-column {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+/* Children share the row on wide screens */
+.two-column .left,
+.two-column .right {
+  flex: 1 1 0;
+}
+
+/* Image niceties */
+.two-column .left img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* On narrow screens, stack top–bottom instead of side-by-side */
+@media (max-width: 1000px) {
+  .two-column {
+    flex-direction: column;
+  }
+
+  .two-column .left,
+  .two-column .right {
+    width: 100%;
+  }
+}
+
