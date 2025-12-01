@@ -275,6 +275,12 @@ Internal / Periodic
 ``None`` is assigned to the ``boundaryTypeMap`` when an internal boundary condition is required or a periodic boundary condition has been set as part of the mesh.
 Periodicity is linked to the mesh connectivity and is handled by the meshing tool.
 
+.. note::
+
+   Periodic pairs are part of the mesh connectivity stored in the ``.re2``
+   file. Simply changing a boundary condition from ``wall`` to ``periodic`` in
+   ``.par`` will most likely not work. See :ref:`mesh_setup_connectivity` for
+   details.
 
 Special Cases
 -------------
