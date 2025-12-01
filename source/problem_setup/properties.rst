@@ -185,7 +185,7 @@ The ``time`` parameter is passed to the ``uservp`` function to provide the curre
 
       equation = navierStokes + variableViscosity
 
-.. _cht_properties:
+.. _properties_cht:
 
 Conjugate Heat Transfer Setup
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

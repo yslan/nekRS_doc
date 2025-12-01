@@ -677,6 +677,7 @@ There are three main limitations for the *NekRS* mesh:
 
    Lower-dimensional (2D/1D) setups can run on a 3D mesh by enforcing zero-gradient boundary conditions on all solution variables in the out-of-interest directions.
    Material properties and forcing terms must likewise be constant (or zero-gradient) in those directions.
+   See :ref:`mesh_setup_connectivity` for examples.
 
 The header of a ``.re2`` file is a single 80-character line. 
 While minor variants exist across versions, they all encode: ``(version) (total elements) (dimension) (fluid elements)``.

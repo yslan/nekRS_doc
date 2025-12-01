@@ -1,331 +1,779 @@
 .. _meshing:
 
-Meshing
-=======
+Mesh & Meshing
+==============
 
-The first step in setting up a case is to have a mesh of the geometry to spatially discretize the simulation domain with sufficient fidelity to accurately resolve the physics of the case based on the end-use application with the correct boundary conditions.
+This chapter describes how to configure mesh-related options in *NekRS* and
+outlines common workflows for generating, importing, and modifying meshes.
+For practical guidance on mesh quality and refinement strategies, see
+:ref:`Meshing Tips <meshing_tips>`.
 
-NekRS uses its own binary mesh format, ``.re2``, due to its small size and speed of processing compared to ASCII-based formats.
-Simple meshes can be created using the ``genbox`` tool. 
-More complex spatial domains can be imported in `Gmsh's <https://gmsh.info/>`__ ``.msh``, or in the Exodus II (``.exo``) mesh format.
-Nek5000's `gmsh2nek <https://github.com/Nek5000/Nek5000/blob/master/tools/gmsh2nek/README.md>`__ and `exo2nek <https://github.com/Nek5000/Nek5000/blob/master/tools/exo2nek/README.md>`__.
+A quick overview:
 
-This part of the documentation covers some simple examples that illustrate how to use each of the aforementioned tools, along with a basic overview of the `mesh_t` struct that is commonly used in NekRS to perform operations such as modifying the mesh and setting boundary conditions.
+- :ref:`mesh_setup` to load and modify meshes, boundary tags and connectivity
+- Generate simple meshes with :ref:`meshing_nek5000_tools`
+- :ref:`meshing_convert` from Gmsh, Exodus II, and CGNS
 
-.. _meshing_nek5000_tools:
+Related topics:
 
-Using Nek5000 Meshing Tools
----------------------------
+- :ref:`mesh_moving` setup
+- :ref:`meshing_cht` meshes
+- On-the-fly :ref:`meshing_hrefine`
+- :ref:`Additional meshing tips <meshing_tips>`
+- Overview of `mesh_t`
 
-------
-genbox
-------
+.. _mesh_setup:
 
-Simple meshes can be generated using Nek5000's meshing tool ``genbox``.
+Runtime Setup
+-------------
 
-Below is a simple mesh based on Nek5000's `MHD example <https://github.com/Nek5000/NekExamples/tree/master/mhd>`__.
+Meshes are stored in the binary :ref:`re2 file <re2_file>`, which contains the
+coordinates and boundary tags. Several aspects of the mesh can still be
+adjusted at runtime in a flexible way.
 
-.. code-block:: none
+.. _mesh_setup_coordinates:
 
-    gpf.rea
-    -3                    (spatial dimensions: <0 for .re2)
-    2                   (number of fields)	: v,T
-    #
-    #    Circular Polarized Flow of Galloway & Proctor (Dynamo)
-    #
-    #
-    #========================================================
-    #
-    Box 1
-    -4  -4  -8                              (nelx,nely,nelz for Box) 
-    0.0 1.0 1.0                             (x0, x1 ratio or xe_i) 
-    0.0 1.0 1.0                             (y0, y1 ratio or ye_j) 
-    0.0 1.0 1.0                             (z0, z1 ratio or ze_k) 
-    P  ,P  ,P  ,P  ,P  ,P                   (cbx0,  cbx1,  cby0,  cby1,  cbz0,  cbz1)  Velocity (3 characters)
-    P  ,P  ,P  ,P  ,P  ,P                   (cbx0,  cbx1,  cby0,  cby1,  cbz0,  cbz1)  Temperature
+Coordinates Modification
+^^^^^^^^^^^^^^^^^^^^^^^^
 
+Like *Nek5000*, *NekRS* allows mesh coordinates to be modified at runtime.
+Static, one-time deformations are typically applied during initialization in
+``usrdat2`` in the ``usr`` file or ``UDF_Setup()`` in the ``.udf`` file.
 
-- The first line of this file supplies the name of an existing 3D ``.rea`` file that has the appropriate run parameters (viscosity, timestep size, etc.). These parameters can be modified later, but it is important that ``.rea`` be a 3D file.
-- The next line indicates the number of dimensions, and the negative sign indicates that ``genbox`` should generate an ``.re2`` file (whereas a positive sign would generate a legacy ``.rea`` file compatible with Nek5000). For NekRS, you will always run with a ``-3`` since NekRS performs 3D simulations only, and is not compatible with ``.rea`` files.
-- The third line indicates the number of fields for this simulation.
-- The next set of lines just shows how one can place comments into a ``genbox`` input file.
-- The line that starts with "Box" indicates that a new box is starting, and that the following lines describe a typical box input.  Other possible key characters (the first character of Box, "B") are "C" and "M", more on those later.
-- The first line after "Box" specifies the number of elements in the :math:`x`, :math:`y`, and :math:`z` directions. The negative sign indicates that you want ``genbox`` to automatically generate the element distribution along each axis, rather than providing it by hand.  (More on this below.)
-- The next 3 lines specify the starting point, end point, and the relative size of each element  along each Cartesian direciton. The third argument for the ratio can be adjusted to create a graded mesh, or you can simply specify the exact coordinates for a given Cartesian direction, having adjusted the sign of the corresponding term on the line after ``Box1``. For example, for the y direction:
+In principle, any mesh point can be moved arbitrarily, as long as the mapping
+remains valid—non-self-intersecting with a positive Jacobian. Below we show
+examples of common operations implemented in ``usrdat2`` (in the ``.usr`` file),
+including uniform scaling for non-dimensionalization, rotations, and wall-normal
+stretching.
 
-.. code-block:: none
+.. tabs::
 
-   -4  4 -8                      Nelx  Nely
-   0.0   1.0   1.0               x0  x1   ratio
-   0.00 0.25 0.4 0.85 1.0        y0  y1 ... y4
+   .. tab:: Uniform scaling (``pb146``)
 
-- The last two lines specify `boundary conditions <Boundary conditions>`__ conditions on each side of the box for each field.
+      In the ``pb146`` example, the mesh is rescaled so that the radius of
+      pebbles are scaled from 1.5 to 1.0.
 
---------
-reatore2
---------
+      .. code-block:: fortran
 
-The ``reatore2`` tool is a simple mesh conversion utility that will convert a legacy Nek5000 mesh file (``.rea``) into a NekRS-compatible binary mesh file (``.re2``).
-The ``.rea`` format is a combined parameter and mesh format.
-Running ``reatore2`` will generate both an ``.re2`` file and a new ``.rea`` file.
-The new ``.rea`` file will contain the same parameter settings as the previous ``.rea`` file, but will not include any element information.
-Instead, the number of elements listed in the new ``.rea`` file will be negative, indicating that the mesh information is contained in a matching ``.re2`` file.
-To use ``reatore2``, simply compile it using ``./maketools reatore2`` as discussed for other meshing utilities like ``genbox``. Launch it from the terminal, and simply enter the name of the ``rea`` file, followed by the desired name for the ``re2`` file.
+         subroutine usrdat2
+         include 'SIZE'
+         include 'TOTAL'
 
+         ! rescale to R_pebble = 1
+         n     = lx1*ly1*lz1*nelv
+         scale = 1.0/1.5
+         do i=1,n
+           xm1(i,1,1,1) = xm1(i,1,1,1)*scale
+           ym1(i,1,1,1) = ym1(i,1,1,1)*scale
+           zm1(i,1,1,1) = zm1(i,1,1,1)*scale
+         enddo
 
-.. _meshing_convert:
+         return
+         end
 
-Convert From Other Mesh Format
-------------------------------
+   .. tab:: Domain rescaling (``tgv``)
 
-------------------
-Using ``gmsh2nek``
-------------------
-Prior to using ``gmsh2nek``, it is recommended you compile it using a script that is already included within Nek5000.
-In addition to the compilers necessary to use `Nek5000 <https://nek5000.github.io/NekDoc/quickstart.html>`__, ``gmsh2nek`` requires ``cmake``.
-Simply switch to ``path/to/Nek5000/tools``, and execute the script ``./maketools gmsh2nek``.
-Once it is compiled, the executable will be available in ``Nek5000/bin``.
-If you added the ``Nek5000/bin`` folder to your ``$PATH`` environment variable as recommended in the `Nek5000 Quickstart Guide <https://nek5000.github.io/NekDoc/quickstart.html>`__, ``gmsh2nek`` can be used as any other utility added to your shell environment's ``$PATH`` or as terminal commands can be used.
+      In the ``tgv`` example, the mesh is rescaled to
+      :math:`[-\pi,\pi]^3`:
 
-Before converting a Gmsh ``.msh`` file using ``gmsh2nek``, ensure it is saved in the appropriate format using the following checklist:
+      .. code-block:: fortran
 
-- NekRS requires HEX20 elements. Before exporting your ``.msh`` file, create such elements throughout your mesh by clicking *Mesh->Set Order 2* in the Gmsh GUI, using the command ``SetOrder`` or passing the option ``-order 2`` to Gmsh in the terminal . Refer to the `Gmsh documentation <https://gmsh.info/doc/texinfo/gmsh.html>`__ for further details.
+         subroutine usrdat2
+         include 'SIZE'
+         include 'TOTAL'
 
-- Export your mesh as Version 2 ``.msh`` file. While both ASCII and binary files are supported, the latter is recommended for large meshes. Do not check any boxes in the export menu when using the GUI. Simply select Version 2 ASCII or Binary from the drop-down menu and proceed with the export.
+         a = -pi
+         b =  pi
+         call rescale_x(xm1,a,b) ! rescale mesh to [-pi, pi]^3
+         call rescale_x(ym1,a,b)
+         call rescale_x(zm1,a,b)
 
-- Setting up periodic boundaries requires a few additional steps. See the section on `sideset and boundary condition setup <Sidesets and applying boundary conditions>`__.
+         return
+         end
 
-- Note that NekRS does not support 2D simulations. ``gmsh2nek`` will export 2D meshes only because it has that capability for use with Nek5000, which can perform 2D simulations, but these are not compatible with NekRS.
+   .. tab:: Rotation (``shlChannel``)
 
-- Ensure your sidesets are set up correctly. See the section on `sidesets and boundary condition setup <Sidesets and applying boundary conditions>`__
+      In the ``shlChannel`` example, the domain is rotated by an angle
+      ``P_ROT``:
 
-``gmsh2nek`` will guide you through the mesh conversion process, step-by-step, with helpful prompts. You can also merge a solid domain mesh when prompted, provided the mesh is conformal with the fluid domain mesh. This allows for the setup of conjugate heat transfer cases.
+      .. code-block:: fortran
 
+         subroutine usrdat2
+         include 'SIZE'
+         include 'TOTAL'
+         include 'CASEDATA'
 
-Using ``exo2nek``
------------------
+         call rescale_x(xm1, 0.0, 1.0)
+         call rescale_x(ym1,-1.0, 0.0)
+         call rescale_x(zm1, 0.0, 1.0)
 
-Similar to ``gmsh2nek``, the Nek5000 tool ``exo2nek`` tool converts ``.exo`` meshes into the native ``.re2`` format.
-It is compiled similary using ``./maketools exo2nek``. All features and restrictions from ``gmsh2nek`` apply here as well.
-The element types supported by ``exo2nek`` are HEX20, TET4+WEDGE6, TET4+WEDGE6+HEX8, TET10+WEDGE15, TET10+WEDGE15+HEX20. 
-For hybrid mesh (TET4+WEDGE6, TET4+WEDGE6+HEX8, TET10+WEDGE15, TET10+WEDGE15+HEX20), ``exo2nek`` will perform tet-to-hex and wedge-to-hex conversion, ensuring the final mesh only has hex elements.
-This tool can also create a conjugate heat transfer mesh using two conformal meshes - one for the solid and one for the fluid domain. For
-further information on setting up sidesets and boundary conditions, see the section on `applying boundary conditions <Sidesets and applying boundary conditions>`__
-
-.. _meshing_cht:
-
-Conjugate Heat Transfer
------------------------
-
-NekRS can simulate conjugate heat transfer when provided with a mesh for the solid domain that is conformal to the fluid domain mesh.
-While Nek5000 required the use of its internal meshing utility ``prenek`` to merge the solid and fluid meshes, NekRS does not require the use of ``prenek`` (however, meshes generated by ``prenek`` then converted using ``reatore2`` are still compatible with NekRS).
-Instead, we recommend the use of ``gmsh2nek`` or ``exo2nek`` to merge the solid domain with the fluid domain when prompted.
-To distinguish between the mesh element types, reference the ``nrs->mesh->elementInfo[e]`` or ``nrs->mesh->o_elementInfo[e]`` objects, which store 0 for fluid domain elements, and 1 for solid domain elements.
-
-TET-TO-HEX
------------------------
-As Nek5000 supports only hexahedral elements, exo2nek includes a feature that automatically converts Exodus tetrahedral and prism meshes to pure hexahedral meshes. 
-The generation of Exodus mesh can be achieve by codes like, CUBIT, ANSYS-ICEM, Point-wise etc.
-All tetrahedral elements are converted to 4 hexahedral elements (tet-to-hex) and all wedge elements are converted to 6 hexahedral elements (wedge-to-hex). 
-Hex20 elements in exodus mesh will be splitted into 8 Nek hex20 elements, in order to conformal to other elements.
-These conversions are supported for both 1st and 2nd order elements.
-
-- TET4 + WEDGE6 (Exodus) –> HEX8 (Nek)
-- TET4 + WEDGE6 + HEX8 (Exodus)  –> HEX8 (Nek)
-- TET10 + WEDGE15 (Exodus) –> HEX20 (Nek)
-- TET10 + WEDGE15 + HEX20 (Exodus)  –> HEX20 (Nek)
-
-Sidesets and applying boundary conditions
-------------------------------------------
-
-Setting up sidesets correctly is important for being able to apply boundary conditions correctly and to avoid compile-time errors resulting from incorrect sideset definitions.
-For further information on the types of boundary conditions available, see the page that focuses entirely on the `types of boundary conditions available in NekRS <Boundary conditions>`__.
-
-- The sidesets are identified by NekRS on the basis of their numerical ID. ``gmsh2nek`` and ``exo2nek`` will detect any text-based IDs, but those are not used by NekRS internally.
-
-- The numerical IDs must start with 1 and must be in a continuous, increasing order of integers with no gaps.
-
-- The number of sidesets in the fluid or solid domain must match the number of ``boundaryID`` entries in the ``.par`` file for the respective solution field's card (e.g.: velocity and temperature).
-
-- Periodic boundary conditions are supported but for translational periodicity only. In other words, the periodic sideset pairs must lie along the same normal vector and they must be conformal, otherwise ``exo2nek`` and ``gmsh2nek`` will raise errors. Rotational periodicity is currently not supported, however rotational symmetry boundary conditions can be used for RANS or laminar LES/DNS cases if appropriate for the simulations' goals.
-
-- Note that the `cbc` array used by Nek5000 for setting boundary conditions within the ``usrdat2`` subroutine of ``usr`` files is **not** used by NekRS for setting boundary conditions. Anything specified using the legacy Nek5000 approach for setting boundary conditions using the `cbc` array will not impact the BCs applied within the simulation. The use of the ``par`` file array is recommended for setting BCs. The ``cbc`` array is used mainly for certain internal Nek5000 routines that are bundled with NekRS (e.g. ``torque_calc`` for drag or torque calculations) or for backwards compatiblity with legacy Nek5000 features, such as assigning or modifying sideset IDs for meshes generated through ``genbox``, which have the appropriate BCs (e.g. ``v  ``, ``P  `` etc) in the ``cbc`` array but do not have a ``boundaryID`` assigned.
-
-- Periodic boundary setup for meshes imported through ``gmsh2nek`` or ``exo2nek`` does not require declaring them as periodic boundaries in the ``.par`` file, but instead requires changing the periodic sideset pair's boundary IDs to 0. This is because periodic faces are considered internal faces "connected" to another such face on the corresponding periodic sideset, and as such are treated the same as all other internal faces - with a boundary ID of zero. Non-zero IDs are reserved for external boundaries or sidesets with non-periodic boundary conditions. After setting these boundary IDs to 0, it may be necessary to adjust the ID of other sidesets to keep the numbering consistent with the aforementioned requirements. This can be accomplished through the following code in the ``usrdat2`` subroutine of the ``usr`` file (TODO: udf?)
-
-.. code-block:: fortran
-
-   subroutine usrdat2
-   implicit none
-   include 'SIZE'
-   include 'TOTAL'
-   integer e,f,nfaces
-
-   nfaces = 2*ldim
-
-   do e=1,nelt
-   do f=1,2*ndim
-      if (boundaryID(ifc,iel).eq. 1) then
-        boundaryID(ifc,iel) = 1
-      else if (boundaryID(ifc,iel).eq. 2) then ! Periodic sideset 1
-        boundaryID(ifc,iel) = 0
-      else if (boundaryID(ifc,iel) .eq. 3) then ! Periodic sideset 1
-        boundaryID(ifc,iel) = 0
-      else if (boundaryID(ifc,iel) .eq. 4) then ! Convert Sideset 4 to Sideset 2 to avoid gaps in numbering
-        boundaryID(ifc,iel) = 2
-      endif
-   enddo
-   enddo
-
-   return
-   end
-
-
-Mesh-related data structures
-----------------------------
-
-This section describes commonly-used data structures related to the mesh, the first of which is ``mesh_t``.
-For the fluid domain, all mesh information is stored
-in the ``nrs->mesh`` object, while for scalars such as temperature, mesh information is stored on the
-``nrs->cds->mesh`` object. These meshes differ in cases such as conjugate heat transfer, where the
-velocity mesh is distinct from the temperature mesh. NekRS performs domain decomposition to ensure
-an even split of the mesh across the number of specified MPI tasks, in order to keep the computational load
-across all MPI tasks as even as possible. As a result, the mesh gets split into pieces with approximately
-equal degrees of freedom across each MPI task. The ``mesh_t`` members therefore correspond to the local
-section of the mesh accessed by the given MPI task. For example, ``Nelements`` corresponds to the local
-number of elements allotted to the given MPI task.
-
-To keep the following summary table general, the variable names are referred to simply as living on
-the ``mesh`` object, without any differentiation between whether that ``mesh`` object is the object on
-``nrs`` or ``nrs->cds``.
-
-.. table:: Important ``mesh_t`` members
-   :name:  mesh_data
-
-   ================== ============================ ================== =================================================
-   Variable Name      Size                         Host or Device?           Meaning
-   ================== ============================ ================== =================================================
-   ``comm``           1                            Host               MPI communicator
-   ``device``         1                            Host               backend device
-   ``dim``            1                            Host               spatial dimension of mesh
-   ``elementInfo``    ``Nelements``                Host               phase of element (0 = fluid, 1 = solid)
-   ``EToB``           ``Nelements * Nfaces``       Both               mapping of elements to type of boundary condition
-   ``N``              1                            Host               polynomial order for each dimension
-   ``NboundaryFaces`` 1                            Host               *total* number of faces on a boundary (rank sum)
-   ``Nelements``      1                            Host               number of local elements owned by current process
-   ``Nfaces``         1                            Host               number of faces per element
-   ``Nfp``            1                            Host               number of quadrature points per face
-   ``Np``             1                            Host               number of quadrature points per element
-   ``rank``           1                            Host               parallel process rank
-   ``size``           1                            Host               size of MPI communicator
-   ``Nfields``        1                            Host               Number of fields passed to the PDE solver
-   ``cht``            1                            Host               conjugate heat transfer status (0 = off, 1 = on)
-   ``vmapM``          ``Nelements * Nfaces * Nfp`` Both               quadrature point index for faces on boundaries
-   ``x``              ``Nelements * Np``           Both               :math:`x`-coordinates of physical quadrature points
-   ``y``              ``Nelements * Np``           Both               :math:`y`-coordinates of physical quadrature points
-   ``z``              ``Nelements * Np``           Both               :math:`z`-coordinates of physical quadrature points
-   ``Nvgeo``          ``<chk>``                    <chk>              Volumetric geometric factors
-   ``Nggeo``          ``<chk>``                    <chk>              Second-order volumetric geometric factors
-   ``vertexNodes``    ``<chk>``                    <chk>              Vertex nodes' indices
-   ``edgeNodes``      ``<chk>``                    <chk>              Edge nodes' indices
-   ``edgeNodes``      ``<chk>``                    <chk>              List of element reference interpolation nodes on element faces
-   ``o_LMM``          ``<chk>``                    Device             Lumped mass matrix
-   ``U``              ``Nelements*Np``             Both               Mesh velocity (often used with ALE solver)
-   ``D``              ``Nelements*Np``             Both               1D Differentiation matrix
-   ``o_vgeo``         ``<chk>``                    Device             Volume geometric factors
-   ``o_sgeo``         ``<chk>``                    Device             Surface geometric factors
-   ================== ============================ ================== =================================================
-
-
-The second most important structure is ``bcData``. It is often referred to in the ``oudf`` kernels to set boundary conditions.
-Its members are typically accessed on the device, and the kernels for setting boundary conditions will iterate over all the GLL points
-on a given boundary, setting these values appropriately for each point. The following table details what the most important members
-of this structure mean.
-
-.. table:: Important ``bcData`` members
-   :name:  bcData_members
-
-   ===================== =======================================================
-   Variable Name                Meaning
-   ===================== =======================================================
-   ``idM``                Element's mesh ID (?)
-   ``fieldOffset``        Size of a field (offset for a given component)
-   ``id``                 Sideset ID
-   ``time``               Current time
-   ''x/y/z``              X/Y/Z coordinates
-   ``nx/ny/nz``           X/Y/Z normals
-   ``t1x/t1y/t1z``        X/Y/Z tangents
-   ``t2x/t2y/t2z``        X/Y/Z bitangents
-   ``p/u/v/w``            Pressure and the 3 velocity components
-   ``scalarID``           ID of the scalar as per the ``par`` file
-   ``s``                  Scalar value
-   ``flux``               Flux value for flux BC
-   ``meshu/meshv/meshw``  Mesh velocity components (used in ALE framework)
-   ``trans/diff``         Mesh transport/diffusion coefficients (ALE framework)
-   ===================== =======================================================
-
-
-
-Mesh modification in NekRS
---------------------------
-
-Like Nek5000, NekRS also allows for mesh modification during run time. Static, one-time deformations can be performed during the initialization phase using the ``usr`` file. Typically, the best place to perform such mesh
-modifications would be the ``usrdat2`` subroutine. One of the most common deformations performed is scaling the entire mesh by a constant factor. For non-dimensionalization of a case, this factor is often the reciprocal of
-the hydraulic diameter. From the ``eddyNekNek`` example:
-
-.. code-block:: fortran
+         ntot = nx1*ny1*nz1*nelt
+
+         do i=1,ntot
+            xpt = xm1(i,1,1,1)
+            ypt = ym1(i,1,1,1)
+
+            xm1(i,1,1,1) = xpt * cos(P_ROT) - ypt * sin(P_ROT)
+            ym1(i,1,1,1) = xpt * sin(P_ROT) + ypt * cos(P_ROT)
+         enddo
+
+         return
+         end
+
+   .. tab:: Wall-normal stretching (``ktauChannel``)
+
+      In the ``ktauChannel`` example, wall-normal refinement is introduced
+      using a hyperbolic tangent mapping:
+
+      .. code-block:: fortran
+
+         subroutine usrdat2
+         include 'SIZE'
+         include 'TOTAL'
+
+         parameter(BETAM = 2.8)
+
+         call rescale_x(xm1, 0.0, 8.0)
+         call rescale_x(ym1,-1.0, 0.0)
+         call rescale_x(zm1, 0.0, 1.0)
+
+         ntot = nx1*ny1*nz1*nelt
+
+         do i=1,ntot
+            ym1(i,1,1,1) = tanh(BETAM*ym1(i,1,1,1))/tanh(BETAM)
+         enddo
+
+One can apply coordinate transformations in ``UDF_Setup()``, and even
+modify the mesh when starting from a restart file (see :ref:`initial_conditions`
+for the initialization behavior). In the ``periodicHill`` example below, the
+mesh coordinates are first brought to the host with
+``auto [x, y, z] = mesh->xyzHost();`` and then copied back to the device via
+``mesh->o_x.copyFrom(x.data());`` (and similarly for ``y`` and ``z``).
+Alternatively, the :term:`OCCA` device arrays can be modified directly, either
+using common utilities such as :ref:`linalg` or a custom kernel.
+
+.. code-block:: cpp
+
+   auto mesh = nrs->meshV;
+   auto [x, y, z] = mesh->xyzHost(); // copy to host
+
+   for (int n = 0; n < mesh->Nlocal; n++) {
+     x[n] = 0.5 * (sinh(betax * (x[n] - 0.5)) / sinh(betax * 0.5) + 1.0);
+     y[n] = 0.5 * (tanh(betay * (2.0 * y[n] - 1.0)) / tanh(betay) + 1.0);
+
+     x[n] = (x[n] - xmin) * xscale;
+     y[n] = (y[n] - ymin) * yscale;
+     z[n] = (z[n] - zmin) * zscale;
+
+     x[n] = x[n] + amp * shift(x[n], y[n], Lx, Ly, W);
+
+     auto yh = hill_height(x[n], Lx, W, H);
+     y[n] = yh + y[n] * (1.0 - yh / Ly);
+   }
+   mesh->o_x.copyFrom(x.data()); // copy to device
+   mesh->o_y.copyFrom(y.data());
+   mesh->o_z.copyFrom(z.data());
+
+
+.. _mesh_setup_sidesets:
+
+Sidesets \& Boundary Tags
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Correct sideset definitions are essential for applying boundary conditions
+properly and for avoiding compile-time errors due to inconsistent boundary
+tagging. For a detailed overview of the available boundary condition types,
+see :ref:`boundary_conditions`.
+
+**Boundary tags in the .re2 file**
+
+The :ref:`re2 file <re2_file>` stores two kinds of boundary tags for each face:
+
+- A three-character string, which populates the *Nek5000* array
+  ``cbc(f,e,ifield)``.
+- A numeric ID, which populates ``bc(5,f,e,ifield)`` and is then mapped to
+  ``boundaryID(f,e)`` for the fluid domain (and to ``boundaryIDt(f,e)`` when a
+  fluid + solid domain is present, e.g., in conjugate heat transfer).
+
+Not all meshes carry both tags. in many cases, only one of them is present.
+
+**Overall logic**
+
+When *NekRS* initializes the mesh:
+
+1. The ``.re2`` file fills both ``cbc`` and ``boundaryID``/``boundaryIDt`` if
+   they are present.
+2. If ``boundaryID`` is **nonzero**, *NekRS* ignores the ``cbc`` array and uses
+   the numeric IDs.
+3. If ``boundaryID`` is **zero** everywhere, *NekRS* relies on ``cbc``. You can
+   either:
+
+   - run the case using ``cbc`` only, or
+   - explicitly convert ``cbc`` to ``boundaryID`` (recommended for clarity and
+     for use with the ``.par`` file interface).
+
+.. tip::
+
+   When converting a legacy *Nek5000* case to *NekRS*, the ``cbc`` array
+   usually already contains the correct boundary tags. It is still good
+   practice to define the mapping in ``usrdat2``, or at least set
+   ``boundaryID`` to zero if it is not used, in case the ``re2`` file
+   carries non-zero ``bc`` entries.
+
+   Here is a typical mapping from ``cbc`` to ``boundaryID`` (from the ``.usr``
+   in the ``pb146`` example):
+
+   .. code-block:: fortran
 
       subroutine usrdat2
       include 'SIZE'
       include 'TOTAL'
-      include 'CASEDATA'
-
-      n = nx1*ny1*nz1*nelt    !  Rescale mesh to [0,2pi]^2
-
-      call cmult(xm1,P_SCALE,n)
-      call cmult(ym1,P_SCALE,n)
 
       do iel=1,nelt
       do ifc=1,2*ndim
-         if (cbc(ifc,iel,1) .eq. 'int') then
-           boundaryID(ifc,iel) = 1
-         endif
+         if (cbc(ifc,iel,1) .eq. 'v  ') boundaryID(ifc,iel) = 1
+         if (cbc(ifc,iel,1) .eq. 'O  ') boundaryID(ifc,iel) = 2
+         if (cbc(ifc,iel,1) .eq. 'SYM') boundaryID(ifc,iel) = 3
+         if (cbc(ifc,iel,1) .eq. 'W  ') boundaryID(ifc,iel) = 4
       enddo
       enddo
 
       return
       end
 
-Many more sophisticated transformations are possible as essentially any point on the mesh can be moved in any manner, provided the user ensures that none of the elements ends up with a negative Jacobian. For a more complex mesh modification demonstration,
-see the ``periodicHill`` example.
+**Using numeric boundaryID**
 
-Dynamic mesh movement is possible using the moving mesh solver based on the Arbitrary Lagrangian-Eulerian (ALE) framework. When supplied with a mesh velocity on a moving boundary, the solver automatically moves the mesh according to ALE equations and the
-mesh deformation diffusion parameter which controls the spatial blending of the deformation into the entire domain from the moving mesh boundary. For more details, consult the ``mv_cyl`` example. Apart from the ALE solver, the user has the option to control
-the mesh deformation themselves using ``solver = user`` in the ``[MESH]`` block, but it becomes the user's responsibility to account for the effects of the mesh movement on the physics of the fluid and any scalars being simulated.
+If ``boundaryID`` is nonzero, *NekRS* ignores the ``cbc`` array and uses the
+numeric IDs instead. In this mode, the ``boundaryIDMap`` entries in the
+``.par`` file are used to map those IDs to the actual boundary conditions for
+each field. A few rules apply:
+
+- Numeric sideset IDs must start at 1 and form a continuous sequence of
+  integers with no gaps. If there are gaps (for example,
+  ``unique(boundaryID) = 3, 11, 29``), you must remap them to a contiguous
+  range using ``boundaryIDMap`` options under ``[MESH]`` in the ``.par`` file:
+
+  .. code-block:: ini
+
+     [MESH]
+     boundaryIDMap      = 11, 3, 29   # maps 11, 3, 29 -> 1, 2, 3
+     boundaryIDMapFluid = 11          # for conjugate heat transfer only
+
+- The number of distinct nonzero ``boundaryID`` values must match the number
+  of entries in ``boundaryTypeMap`` in the ``.par`` file; that is, every ID
+  must be assigned a type.
+
+- Periodic sidesets are not used directly as boundary conditions and are
+  typically treated as internal faces. The ``.re2`` file must already encode
+  the correct periodic pairing, which *NekRS* uses to set up mesh connectivity.
+  Once this connectivity is established, the IDs given in ``boundaryID``/``.par``
+  are only used to tag those faces. Periodic boundaries can therefore either be
+  assigned ``boundaryID(f,e) = 0`` or mapped in ``boundaryTypeMap`` to
+  ``none`` or ``periodic``.
+
+.. note::
+
+   Some legacy *Nek5000* subroutines still use ``cbc`` to identify target
+   surfaces (e.g., ``torque_calc`` for drag/torque calculations). In such
+   cases, any BC mapping you introduce must preserve a consistent ``cbc`` array.
+
+.. _mesh_setup_connectivity:
+
+Connectivity
+^^^^^^^^^^^^
+
+In *NekRS*, connectivity is represented as an integer list of unique grid
+points (``glo_num`` in *Nek5000*). By tracking which elements reference which
+grid points, the solver knows how elements are connected and which degrees of
+freedom are shared between neighboring elements.
+
+Apart from the pairing of periodic faces, the ``.re2`` file does not store
+this connectivity information. Instead, it must be supplied in a legacy
+``.co2`` file (typically generated by the Nek5000 tool ``gencon``), or it can
+be constructed on-the-fly at startup using ``parCON`` (part of ``parRSB``, an
+in-house library), which builds the connectivity by matching vertex
+coordinates within a tolerance.
+
+This tolerance is defined relative to the local element edge length. If it is
+too large, nearby vertices may be merged, short edges can collapse, and
+elements become degenerate. *NekRS* starts with ``connectivityTol`` (set in
+``.par``, default ``0.2``) and calls ``parCON`` up to three times, each time
+reducing the tolerance by a factor of 10 until a valid, non-degenerate
+connectivity is found. If the tolerance is too small, some elements can remain
+disconnected from the rest of the mesh; in practice this often shows up as
+unexpected extra nonzero boundary IDs where internal faces appear as external.
+
+A typical ``parCON`` diagnostic output with two attempts looks like (the
+``element_check failed`` line is only a warning):
+
+.. code-block:: none
+
+   Running parCon ...
+      /home/nekrs/build/_deps/nek5000_content-src/3rd_party/parRSB/parRSB/src/con.c:251 element_check failed.
+   Running parCon ...
+   parCon (tol = 1.000000e-03) finished in 10.049 s
+
+At runtime, the user can still override the connectivity via the legacy
+``usrsetvert`` routine in the ``.usr`` file. This is often used for 2D cases
+that are extruded in the :math:`z`-direction with a single element and
+periodic boundary conditions by copying the global vertex indices from one plane
+(e.g., the bottom plane, ``iz = 1``) to the other (the top plane, ``iz = nz``),
+as in the ``channel`` example:
+
+.. code-block:: fortran
+
+   subroutine usrsetvert(glo_num,nel,nx,ny,nz) ! modify glo_num
+   integer*8 glo_num(1)
+
+   ! kludge for periodic bc in z
+   nxy  = nx*ny
+   nxyz = nx*ny*nz
+   do iel = 1,nel
+      ioff = nxyz*(iel-1)
+      do ixy = 1,nxy
+         glo_num(ioff + nxy*(nz-1) + ixy) = glo_num(ioff + ixy)
+      enddo
+   enddo
+
+   return 
+   end
+
+.. _meshing_nek5000_tools:
+
+Nek5000 Meshing Tools
+---------------------
+
+More details are available in the `Nek5000 documentation
+<https://nek5000.github.io/NekDoc/tools.html>`__. Here we briefly review the
+basic usage of these meshing utilities and illustrate them using existing
+*NekRS* examples. See :ref:`nek5000_tools` for acquiring the tools.
+
+.. _meshing_tool_genbox:
+
+genbox
+^^^^^^
+
+Many simple meshes can start from one or more boxes and then be deformed later
+in ``usrdat2`` in the ``.usr`` file. For example, here is ``gabls1/input.box``:
+
+.. code-block:: none 
+   :linenos:
+
+   base.rea
+   -3                     spatial dimension  ( < 0 --> generate .rea/.re2 pair)
+   1                      number of fields
+   #=======================================================================
+   #
+   #    If nelx (y or z) < 0, then genbox automatically generates the
+   #                          grid spacing in the x (y or z) direction
+   #                          with a geometric ratio given by "ratio".
+   #                          ( ratio=1 implies uniform spacing )
+   #
+   #    Note that the character bcs _must_ have 3 spaces.
+   #
+   #=======================================================================
+   #
+   Box
+   -20  -20  -20                                        nelx,nely,nelz for Box
+   0 1 1.                                               x0,x1,gain  (rescaled in usrdat)
+   0 1 1.                                               y0,y1,gain  (rescaled in usrdat)
+   0 1 1.                                               z0,z1,gain
+   P  ,P  ,W  ,v  ,P  ,P                                bc's  (3 chars each!)
+
+- The first line gives the base name for the legacy ``.rea`` file that stores
+  run parameters, which is not used in *NekRS* since it runs from the binary
+  ``.re2`` format.
+
+- The next line is the spatial dimension. For *NekRS*, you should always use
+  ``-3`` for 3D. The negative sign instructs ``genbox`` to generate a binary
+  ``.re2`` file.
+
+- The third line sets the number of fields for the simulation.
+
+- Any line that starts with ``#`` is a comment and is ignored by ``genbox``.
+
+- The line starting with ``Box`` introduces a new axis-aligned box. The
+  following lines describe that box. Other leading characters (e.g. ``C``,
+  ``M``) are also supported but are not covered here. See the `Nek5000 genbox
+  documentation <https://nek5000.github.io/NekDoc/tools/genbox.html>`__.
+
+- The first line after ``Box`` (line 16) specifies the number of elements in
+  the :math:`x`, :math:`y`, and :math:`z` directions. A **negative** value
+  tells ``genbox`` to generate the element distribution automatically along
+  that axis using a geometric series. A **positive** value indicates that a
+  user-specified distribution (given later in the file) should be used.
+
+- The next three lines give the start and end coordinates and a geometric
+  ratio for each Cartesian direction: ``x0, x1, ratio`` (and similarly for
+  :math:`y` and :math:`z`). A ratio of ``1`` yields uniform spacing; values
+  different from ``1`` create a graded mesh (for example, ``ratio < 1`` to
+  cluster points near the lower endpoint).
+
+- The last line specifies the boundary tags for
+  :math:`x_\text{min}, x_\text{max}, y_\text{min}, y_\text{max},
+  z_\text{min}, z_\text{max}` in order. Each tag must be exactly three
+  characters and will populate the ``cbc(f,e,ifield)`` array. In this example,
+  ``P  ,P  ,W  ,v  ,P  ,P`` corresponds to periodic boundaries in :math:`x`
+  and :math:`z`, a wall at the lower :math:`y` boundary, and a fixed-velocity
+  (inflow) condition at the upper :math:`y` boundary.
+
+.. _meshing_tool_n2to3:
+
+n2to3
+^^^^^
+
+The ``n2to3`` tool extrudes a 2D mesh in the :math:`x\text{-}y` plane into a
+3D mesh by adding elements in the :math:`z` direction. This is often useful
+for channel, duct, or blade-passing cases where the cross-section is
+described in 2D and a small number of planes (sometimes with periodic BCs)
+are used in 3D. See `Nek5000 n2to3 documentation <https://nek5000.github.io/NekDoc/tools/n2to3.html>`__
+for detailed usage.
+
+.. _meshing_tool_reatore2:
+
+reatore2
+^^^^^^^^
+
+Since *NekRS* does *not* support the legacy ASCII ``.rea`` format, you must use
+``reatore2`` to convert Nek5000 ``.rea`` meshes to the binary ``.re2`` format
+and move runtime parameters into the ``.par`` file. See the `Nek5000 reatore2
+documentation <https://nek5000.github.io/NekDoc/tools/reatore2.html>`__ for
+detailed usage.
+
+.. _meshing_convert:
+
+Convert External Meshes                                                         
+-----------------------                                                         
+
+Mesh conversion is handled by *Nek5000* tools. See :ref:`nek5000_tools` and the 
+`Nek5000 documentation <https://nek5000.github.io/NekDoc/tools.html>`__ for     
+details. The table below summarizes commonly used external meshing software,    
+their file formats, and the corresponding conversion tools.                     
+
+.. csv-table:: Common meshing software, formats, and *Nek5000* tools            
+   :header: "Software", "Format", "Nek5000 Tool"                                
+   :widths: 40, 30, 30                                                          
+
+   "Gmsh", ".msh (version 2)", "gmsh2nek"                                       
+   "CGNS", ".cgns", "cgns2nek"                                                  
+   "Cubit", ".exo", "exo2nek"                                                   
+   "ANSYS / Fluent / ICEM", ".exo", "exo2nek"                                   
+   "Pointwise", ".exo", "exo2nek"
+
+.. note::
+
+   Meshes converted from external formats use **numeric** side-set IDs, which
+   are stored in ``bc(5,f,e,ifield)`` (see :ref:`mesh_setup_sidesets`). Tools
+   such as ``gmsh2nek`` and ``exo2nek`` can read any text-based IDs from the
+   source mesh, but these names are not used internally by *NekRS*.
+                                                                                
+.. _meshing_convert_gmsh2nek:
+
+Gmsh (``gmsh2nek``)
+^^^^^^^^^^^^^^^^^^^
+
+Before converting a Gmsh ``.msh`` file with ``gmsh2nek``, ensure that it meets
+the following requirements:
+
+- *NekRS* requires **HEX20** elements. Before exporting your ``.msh`` file,
+  create these elements by using "*Mesh → Set order 2*" in the Gmsh GUI.
+  Alternatively, use the ``SetOrder`` command or the ``-order 2`` option on
+  the command line. See the `Gmsh documentation
+  <https://gmsh.info/doc/texinfo/gmsh.html>`__ for details.
+
+- Export the mesh as a Version 2 ``.msh`` file. Both ASCII and binary formats
+  are supported, but binary is recommended for large meshes. When exporting via
+  the GUI, **do not enable any additional checkboxes**; simply select Version 2
+  (ASCII or Binary) from the drop-down menu and complete the export.
+
+- *NekRS* does not support 2D simulations. While ``gmsh2nek`` can export 2D
+  meshes for use with *Nek5000*, these 2D meshes are not compatible with
+  *NekRS*. See :ref:`meshing_tool_n2to3` and :ref:`mesh_setup_connectivity` for
+  constructing a minimal single-layer 3D mesh.
+
+- Ensure that sidesets and periodic boundaries are defined correctly in Gmsh.
+  See the section on :ref:`mesh_setup_sidesets`.
+
+``gmsh2nek`` will guide you through the conversion process with interactive
+prompts. When asked, you can also merge a solid-domain mesh that is conformal
+with the fluid-domain mesh, which is useful for setting up :ref:`meshing_cht`
+cases.
+
+.. _meshing_convert_exo2nek:
+
+Exodus II (``exo2nek``)
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``exo2nek`` tool converts Exodus II ``.exo`` meshes to the native ``.re2``
+format. |br|
+The following element types are supported:
+
+- HEX20
+- TET4 + WEDGE6
+- TET4 + WEDGE6 + HEX8
+- TET10 + WEDGE15
+- TET10 + WEDGE15 + HEX20
+
+For hybrid meshes, ``exo2nek`` automatically converts tetrahedral and wedge
+elements to hexahedra. See :ref:`meshing_tet_to_hex` for details. The tool can
+also construct a conjugate heat transfer mesh from two conformal meshes, one for
+the solid domain and one for the fluid domain. For sideset and boundary
+condition setup, see :ref:`mesh_setup_sidesets`.
+
+.. _meshing_tet_to_hex:
+
+Tet-to-Hex
+^^^^^^^^^^
+
+As *NekRS* supports only hexahedral elements, ``exo2nek`` can split tetrahedral
+and wedge elements into hexahedra while preserving conformity with neighboring
+HEX elements. The supported conversions are
+
+- TET4 + WEDGE6 (Exodus)            -> HEX8 (Nek)
+- TET4 + WEDGE6 + HEX8 (Exodus)     -> HEX8 (Nek)
+- TET10 + WEDGE15 (Exodus)          -> HEX20 (Nek)
+- TET10 + WEDGE15 + HEX20 (Exodus)  -> HEX20 (Nek)
+
+Exodus meshes can be generated by tools such as Cubit, ANSYS ICEM, and
+Pointwise. In the conversion, each tetrahedral element is mapped to four
+hexahedral elements (tet-to-hex), and each wedge element is mapped to six
+hexahedral elements (wedge-to-hex). HEX20 elements in the Exodus mesh are split
+into eight Nek HEX20 elements to remain conformal with neighboring elements.
+These conversions are supported for both first- and second-order elements.
+
+.. _mesh_moving:
+
+Moving Mesh
+-----------
+
+Dynamic mesh motion is supported through a moving-mesh solver based on the
+Arbitrary Lagrangian–Eulerian (ALE) framework. Given a prescribed mesh velocity
+on one or more moving boundaries, the solver updates the volume mesh by solving
+the ALE equations with a mesh-deformation diffusion parameter that controls how
+the boundary motion is blended into the interior of the domain. For an example,
+see the ``mv_cyl`` case.
+
+Alternatively, you can control the mesh deformation directly by setting
+``solver = user`` in the ``[MESH]`` block. In this mode, it is your
+responsibility to ensure that the effects of mesh motion are consistently
+included in the fluid and scalar equations.
+
+.. _meshing_cht:
+
+Conjugate Heat Transfer
+-----------------------
+
+*NekRS* can simulate conjugate heat transfer when it is provided with a solid
+mesh that is conformal to the fluid-domain mesh.
+As illustrated in :numref:`fig-walls` of :ref:`intro_comput_approach`, you must
+provide meshes for both the fluid domain :math:`\Omega_f` and the solid domain
+:math:`\Omega_s`, and then merge them using the meshing tools.
+
+Legacy ``.rea`` meshes can be merged using the *Nek5000* utilities ``prenek`` or
+``nekmerge`` (you can use ``re2torea`` and ``reatore2`` to convert between
+``.re2`` and ``.rea`` formats). For externally generated meshes, the converters
+``gmsh2nek`` and ``exo2nek`` also support merging the fluid and solid domains as
+part of the conversion step.
+
+Within *NekRS*, element types can be identified via ``mesh->elementInfo[e]`` or
+``mesh->o_elementInfo[e]``, which store ``0`` for fluid-domain elements and
+``1`` for solid-domain elements. These tags can be used to set up material
+properties (see :ref:`CHT Properties Setup <properties_cht>`) and to define region-specific forcing
+terms.
+
+We also recommend following the tutorial :ref:`conjugate_heat_transfer` as a
+starting point.
 
 .. _meshing_hrefine:
 
-*h* Refinement
+*h*-Refinement
 --------------
 
-*TODO*
+This option performs an on-the-fly global mesh refinement. Each element edge is
+split into :math:`N_{\text{cut}}` uniform segments, so the total number of
+elements increases by a factor :math:`N_{\text{cut}}^3`. The refined mesh is
+built by high-order tensor-product interpolation and preserves the original
+boundary conditions, connectivity, and partitioning.
+
+To use this feature, set the refinement schedule in the ``.par`` file, as shown
+below for :math:`N_{\text{cut}} = 3`. See :numref:`fig-hrefine_mesh` for a 2D
+illustration.
+
+.. code-block:: ini
+
+   [MESH]
+   hrefine = 3
+
+.. _fig-hrefine_mesh:
+
+.. figure:: ../_static/img/hrefine/mesh.png
+   :width: 600px
+   :align: center
+   :figclass: align-center
+   :alt: hrefine-mesh
+
+   h-refinement demo. Each element (red) of a 4×4 2D mesh is refined into 3×3
+   smaller elements, resulting in 144 elements.
+
+Refinement is applied before ``usrdat2``, so users can still adjust mesh
+coordinates and boundary conditions as described in
+:ref:`mesh setup <mesh_setup>`. Multiple rounds of *h*-refinement are also
+supported. See :numref:`tab-hrefine_ex1` for examples.
+
+.. _tab-hrefine_ex1:
+
+.. csv-table:: Examples of *h*-refinement options
+   :header: "Par keys","Rounds","Refinement(s)",":math:`E_{new} / E_{old}`"
+   :widths: 30, 15, 40, 15
+
+   "``hrefine=2``", 1, ":math:`N_{\text{cut}} = 2`", ":math:`2^3`"
+   "``hrefine=2,3``", 2, ":math:`N_{\text{cut}} = 2` then :math:`3`", ":math:`6^3`"
+   "``hrefine=3,2``", 2, ":math:`N_{\text{cut}} = 3` then :math:`2`", ":math:`6^3`"
+   "``hrefine=4``", 1, ":math:`N_{\text{cut}} = 4`", ":math:`4^3`"
+   "``hrefine=2,2``", 2, ":math:`N_{\text{cut}} = 2` then :math:`2`", ":math:`4^3`"
+   "``hrefine=2,2,2``", 3, ":math:`(N_{\text{cut}} = 2)\ \times` 3 times", ":math:`8^3`"
+
+.. Note::
+
+   The order of the refinement schedule matters. Because elements are not
+   renumbered, ``hrefine=2,3`` produces a different element numbering than
+   ``hrefine=3,2``. The same rule applies to the restart option below.
+
+.. Note::
+
+   Because the partitioning is not recomputed, :math:`h`-refinement can introduce
+   load imbalance of up to :math:`N_{\text{cut}}^3` elements per rank.
+
+The restart option also works with *h*-refinement so you can reuse solutions on
+refined meshes. Each checkpoint stores up to four refinement steps in its header.
+On restart, *NekRS* compares the *h*-schedule in the ``.par`` with the
+*h*-schedule stored in either the ``*0.fXXXXX`` or the ``.bp`` file and applies
+any required refinement to the fields. A checkpoint is valid as long as its
+*h*-schedule is an ordered subset of the *h*-schedule requested for the new run.
+See the table and diagram below for an example.
+
+.. csv-table:: Example of *h*-refinement and restart options
+   :header: "Simulations","Input mesh","``hrefine``","Output size"
+   :widths: 15,30,20,35
+
+   "0","``a.re2``","*(none)*",":math:`E`"
+   "1","``a.re2``","3",":math:`3^d E`"
+   "2","``a.re2``","3,2",":math:`6^d E`"
+   "3","``b.re2``","*(none)*",":math:`6^d E`"
+   "4","``b.re2``","2",":math:`12^d E`"
+
+.. container:: two-column
+
+   .. container:: left   
+
+      .. _fig-hrefine_restart:
+      
+      .. figure:: ../_static/img/hrefine/restart.png
+         :width: 600px
+         :align: center
+         :figclass: align-center
+         :alt: hrefine-restart
+      
+         Restart diagram for *h*-refinement. Starting from the top-left ``a.re2``
+         (green), each simulation (blue) dumps a checkpoint file (white) whose header
+         shows the stored *h*-schedule. After writing a new ``b.re2``, the schedule is
+         reset and older checkpoint files are no longer compatible.
+
+   .. container:: right
+
+      .. csv-table:: Supported restart scenarios
+         :header: "","Sim 1","Sim 2","Sim 3","Sim 4"
+         :widths: 12,22,22,22,22
+      
+         "fld 0","ok","ok","Not supported","Not supported"
+         "fld 1","ok","ok","Not supported","Not supported"
+         "fld 2","NA","ok","Not supported","Not supported"
+         "fld 3","NA","NA","ok","ok"
+
+.. Note::
+
+   The *h*-refinement restart option can be combined with other restart options
+   except ``int``.
+
+.. _meshing_tips:
 
 Miscellaneous Tips
 ------------------
 
-Since high-order meshes have a higher number of degrees of freedom, it is important to note that these meshes
-often do not have as high of an element count as lower-order CFD solvers use. The overall metric to pay attention
-to is the number-of-degrees of freedom, which is impacted by both the element count and their order.
+Because high-order meshes place more degrees of freedom in each element, they
+typically use far fewer elements than lower-order CFD solvers. The quantity to
+monitor is therefore the *total number of degrees of freedom*, which depends on
+both the element count and the polynomial order. As a resource and performance
+metric, we use :math:`\mathrm{dof} = E N^3`, where :math:`E` is the number of
+elements and :math:`N` is the polynomial order.
 
-In higher-order finite elements, mesh refinement can be performed in two ways:
+.. note::
 
-- h-refinement (the addition of elements)
-- p-refinement (increasing the polynomial order of all elements).
+   Each element contains :math:`(N+1)^3` GLL points, so the raw storage scales
+   like :math:`\mathcal{O}(E (N+1)^3)`. However, many points are shared across
+   element interfaces, so we define the effective number of degrees of freedom
+   as :math:`\mathrm{dof} = E N^3` for performance estimates.
 
-In practice, we rely on both to achieve optimal mesh resolution. Areas where the flow cross section changes abruptly, where flow separation occurs, or other regions of flow transition such as reactor plena are good candidates for h-refinement. After getting
-convergent results with a low polynomial order (say, ``N=3``), it is a good idea to switch to p-refinement to see if the quantity of interest that you have chosen for your mesh-refinement study converges with increasing polynomial order. This process can sometimes
-be iterative; as one learns more about the flow and its physics, the need for additional h-refinement may become apparent after failing to achieve mesh convergence with p-refinement alone.
+Mesh refinement in higher-order finite elements can be performed in two ways:
 
-The use of higher-order meshes also allows for lower quality elements than typically seen in other finite-element solvers. Depending on the physics, an average aspect ratio of 20 or more can be tolerated for your mesh. Care must be taken to not create overly
-small elements typical of low-order finite-element codes, since NekRS will allocate ``N+1`` Gauss-Lobatto Legendre (GLL) nodes per element, where ``N`` is the polynomial order defined in the ``.par`` file. This can easily lead to excessive degrees of freedom.
-While the polynomial order can be reduced for such meshes (for example, due to small features that impose element size limitations on the entire mesh), NekRS performs best when operating at higher polynomial orders (``N``>=5).
+- *h*-refinement: adding elements
+- *p*-refinement: increasing the polynomial order of the elements
+
+In practice, we rely on both to achieve an effective mesh resolution. Regions
+where the flow cross section changes abruptly, where separation occurs, or where
+the flow transitions (such as reactor plena) are good candidates for
+*h*-refinement. After obtaining converged results with a low polynomial order
+(e.g., ``N = 3``), it is a good idea to switch to *p*-refinement and check
+whether the quantity of interest chosen for the mesh-refinement study continues
+to converge as the polynomial order increases. This process can be iterative:
+as one learns more about the flow physics, the need for additional
+*h*-refinement may become apparent when *p*-refinement alone fails to produce
+mesh convergence.
+
+.. note::
+
+   For sufficiently smooth solutions, projecting onto piecewise polynomials of
+   degree :math:`N` on elements of size :math:`h` in 3D yields a local
+   truncation error of order :math:`\mathcal{O}(h^{N+1})` under *h*-refinement
+   (with :math:`N` fixed). Since :math:`h \sim E^{-1/3}` and
+   :math:`|\Omega| \approx E h^3 = \mathcal{O}(1)`, the global
+   :math:`L^2`-error also scales as :math:`\mathcal{O}(h^{N+1})`.
+
+   When the solution is analytic on each element and the mesh is fixed, the
+   coefficients in a modal orthogonal-polynomial expansion decay
+   geometrically. In this case, the spectral-element approximation exhibits
+   (near-)exponential convergence in :math:`N`, typically written as
+   :math:`\|u - u_N\| \lesssim C \exp(-\alpha N)` for some constants
+   :math:`C, \alpha > 0`.
+
+High-order meshes can also tolerate element shapes that would be considered low
+quality in many low-order finite-element solvers. Depending on the physics,
+average aspect ratios of 20 or more can be acceptable. However, care must be
+taken to avoid overly small elements that are typical of low-order meshes,
+because *NekRS* will allocate ``N+1`` Gauss–Lobatto–Legendre (GLL) nodes per
+element in each coordinate direction. This can easily lead to an excessive
+number of degrees of freedom. While the polynomial order can be reduced for such
+meshes (for example, when small geometric features impose element-size
+limitations), *NekRS* generally performs best when operating at higher
+polynomial orders (e.g., ``N >= 5``).
+
+.. note::
+
+   Combined with efficient matrix-free tensor-product operators of cost
+   :math:`\mathcal{O}(E N^4)` (without forming the full dof-by-dof system),
+   high-order spectral elements typically offer better accuracy per dof and
+   better scalability on modern distributed architectures that favor high
+   compute intensity and data locality.
+
+   While increasing :math:`N` generally improves accuracy per dof, using
+   *extremely* high polynomial orders can become counterproductive:
+
+   - In finite-precision arithmetic, round-off error eventually dominates and
+     limits the attainable accuracy.
+   - On GPUs, very large :math:`N` increases register and shared-memory
+     pressure, which can reduce occupancy and overall performance.
+
+   For these reasons, *NekRS* caps the polynomial order at :math:`N \le 10`,
+   which provides a good balance between accuracy, robustness, and performance
+   on modern architectures.
+
